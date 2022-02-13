@@ -46,6 +46,7 @@
 #include <iostream>
 #include <MC/PropertiesSettings.hpp>
 #include <regex>
+#include "PAPI.H"
 using namespace std::filesystem;
 
 #pragma comment(lib, "bedrock_server_api.lib")
@@ -56,191 +57,23 @@ using namespace std::filesystem;
 
 using namespace std;
 
-class _Group {
-public:
-    string         name; //имя группы
-    string         prefix;
-    vector<string> perms;       //права
-    bool           is_default;  //установлен ли по умолчанию
-    string         inheritance; //группу,которую будем наследовать
-};
-
-class _Groups {
-public:
-    vector<_Group> groups; //группы
-};
-
-class _User {
-public:
-    string nickname; //ник
-    string prefix;
-    string suffix;
-    string         group;       //группа игрока
-    vector<string> permissions; //права игрока
-};
-
-class Users {
-public:
-    vector<_User> users; //игроки
-};
-
-namespace YAML
-{
-    template <>
-    struct convert<_Group>
-    {
-        static Node encode(const _Group& rhs)
-        {
-            Node node;
-            node[rhs.name] = YAML::Node(YAML::NodeType::Map);
-            node[rhs.name]["prefix"] = rhs.prefix;
-            node[rhs.name]["inheritance"] = rhs.inheritance;
-            node[rhs.name]["default"] = rhs.is_default;
-            if (rhs.perms.size() == 0)
-            {
-                node[rhs.name]["permissions"] = vector<string>(0);
-            }
-            node[rhs.name]["permissions"] = rhs.perms;
-            return node;
-        }
-        static bool decode(const Node& node, _Group& rhs)
-        {
-            using namespace std;
-            string name;
-            for (const auto& kv : node)
-            {
-                if (kv.first.as<std::string>() == "")
-                {
-                    continue;
-                }
-                name = kv.first.as<std::string>();
-                break;
-            }
-            rhs.name = name;
-            rhs.prefix = node[name]["prefix"].as<std::string>();
-            rhs.inheritance = node[name]["inheritance"].as<std::string>();
-            rhs.is_default = node[name]["default"].as<bool>();
-            rhs.perms = node[name]["permissions"].as<std::vector<string>>();
-            return true;
-        }
-    };
-} // namespace YAML
-
-string utf8_to_string(const char* utf8str, const locale& loc)
-{
-    // UTF-8 to wstring
-    wstring_convert<codecvt_utf8<wchar_t>> wconv;
-    wstring wstr = wconv.from_bytes(utf8str);
-    // wstring to string
-    vector<char> buf(wstr.size());
-    use_facet<ctype<wchar_t>>(loc).narrow(wstr.data(), wstr.data() + wstr.size(), '?', buf.data());
-    return string(buf.data(), buf.size());
-}
-
-namespace YAML
-{
-    template <>
-    struct convert<_User>
-    {
-        static Node encode(const _User& rhs)
-        {
-            Node node;
-            node[rhs.nickname] = YAML::Node(YAML::NodeType::Map);
-            node[rhs.nickname]["group"] = (rhs.group);
-            node[rhs.nickname]["prefix"] = (rhs.prefix);
-            node[rhs.nickname]["suffix"] = (rhs.suffix);
-            if (rhs.permissions.size() == 0)
-            {
-                node[rhs.nickname]["permissions"] = {};
-            }
-            node[rhs.nickname]["permissions"] = rhs.permissions;
-            return node;
-        }
-
-        static bool decode(const Node& node, _User& rhs) {
-            using namespace std;
-            string name;
-            for (const auto& kv : node) {
-                if (kv.first.as<std::string>() == "")
-                {
-                    continue;
-                }
-                name = kv.first.as<std::string>();
-                break;
-            }
-            rhs.nickname = name;
-            rhs.group = node[name]["group"].as<string>();
-            rhs.prefix = node[name]["prefix"].as<string>();
-            rhs.suffix = node[name]["suffix"].as<string>();
-            rhs.permissions = node[name]["permissions"].as<vector<string>>();
-            return true;
-        }
-    };
-} // namespace YAML
-
-
-_Group load_group(string name) {
-    YAML::Node config = YAML::LoadFile("plugins/PurePerms/groups.yml");
-    _Group group;
-    using namespace std;
-    for (const auto& p : config["groups"]) {
-        _Group g = p.as<_Group>();
-        if (g.name == name)
-        {
-            group = g;
-            break;
-        }
-    }
-    return group;
-}
-
-_User load_user(string nick) {
-    YAML::Node config = YAML::LoadFile("plugins/PurePerms/users.yml");
-    using namespace std;
-    _User user;
-    for (const auto& p : config["users"]) {
-        _User us = p.as<_User>();
-        if (nick == us.nickname)
-        {
-            user = us;
-            break;
-        }
-    }
-    return user;
-}
-
-vector<string> split(string s, string delimiter) {
-    size_t         pos_start = 0, pos_end, delim_len = delimiter.length();
-    string         token;
-    vector<string> res;
-
-    while ((pos_end = s.find(delimiter, pos_start)) != string::npos) {
-        token = s.substr(pos_start, pos_end - pos_start);
-        pos_start = pos_end + delim_len;
-        res.push_back(token);
-    }
-    res.push_back(s.substr(pos_start));
-    return res;
-}
 
 class MotdCmd : public Command
 {
 public:
     void execute(CommandOrigin const& ori, CommandOutput& outp) const override
     {
+        auto id = ori.getPlayer()->getDimensionId();
+        string dim;
+        if (id == 0)
+            dim = "OverWorld";
+        else if (id == 1)
+            dim = "Nether";
+        else if (id == 2)
+            dim = "End";
         string perm = "wp.motd";
-        _Groups    groups;
-        Users      users;
-        auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-        for (const auto& p : nodes["users"])
-        {
-            users.users.push_back(p.as<_User>());
-        }
-        auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-        for (const auto& p : nodes1["groups"])
-        {
-            groups.groups.push_back(p.as<_Group>());
-        }
+        string nick = ori.getPlayer()->getName();
+        string msg = get_msg("permissionDenied");
         if (ori.getPermissionsLevel() == CommandPermissionLevel::Console)
         {
             string str;
@@ -258,65 +91,28 @@ public:
             outp.success(s2);
             return;
         }
-        auto plain = ori.getPlayer()->getName();
-        using namespace std;
-        auto nick = split(plain, " ");
-        string res_nick;
-        for (auto n : nick)
+        else if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
         {
-            for (auto v : users.users)
+            string str;
+            char ch;
+            ifstream in("server.properties");
+            while (in.get(ch))
             {
-                if (n == v.nickname)
-                {
-                    res_nick = n;
+                if (ch == '\n')
                     break;
-                }
+                str += ch;
             }
+            std::regex target("server-name=");
+            std::string replacement = " ";
+            std::string s2 = std::regex_replace(str, target, replacement);
+            outp.success(s2);
+            return;
         }
-        auto pl = load_user(res_nick);
-        auto gr = load_group(pl.group);
-        for (auto v : pl.permissions)
+        else
         {
-            if (v == perm)
-            {
-                string str;
-                char ch;
-                ifstream in("server.properties");
-                while (in.get(ch))
-                {
-                    if (ch == '\n')
-                        break;
-                    str += ch;
-                }
-                std::regex target("server-name=");
-                std::string replacement = " ";
-                std::string s2 = std::regex_replace(str, target, replacement);
-                outp.success(s2);
-                return;
-            }
+            outp.error(msg);
+            return;
         }
-        for (auto v : gr.perms)
-        {
-            if (v == perm)
-            {
-                string str;
-                char ch;
-                ifstream in("server.properties");
-                while (in.get(ch))
-                {
-                    if (ch == '\n')
-                        break;
-                    str += ch;
-                }
-                std::regex target("server-name=");
-                std::string replacement = " ";
-                std::string s2 = std::regex_replace(str, target, replacement);
-                outp.success(s2);
-                return;
-            }
-        }
-        outp.error("You do not have permission to execute this command!");
-        return;
     }
     static void setup(CommandRegistry* registry) {
 
@@ -326,8 +122,6 @@ public:
         registry->registerOverload<MotdCmd>("motd");
     }
 };
-
-vector<string> auth_list;
 
 enum CommandParameterOption;
 
@@ -372,21 +166,19 @@ public:
           case Operation::Add:
           {
               string perm = "wp.cmd.addrm";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               if (world_name == "" || player.getName() == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "" && player.getName() != "")
@@ -411,94 +203,50 @@ public:
                       return;
                   }
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              else if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/" + world_name + "_auth.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/" + world_name + "_auth.txt");
+                      fout << player.getName() << endl;
+                      fout.close();
+                      outp.success("Player " + player.getName() + " succes add to auth list for world " + world_name);
+                      return;
+                  }
+                  else if (in.is_open())
+                  {
+                      in.close();
+                      ofstream fout("plugins/World Protect/" + world_name + "_auth.txt", ios_base::app);
+                      fout << player.getName() << endl;
+                      fout.close();
+                      outp.success("Player " + player.getName() + " succes add to auth list for world " + world_name);
+                      return;
                   }
               }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
+              else
               {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_auth.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_auth.txt");
-                          fout << player.getName() << endl;
-                          fout.close();
-                          outp.success("Player " + player.getName() + " succes add to auth list for world " + world_name);
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_auth.txt", ios_base::app);
-                          fout << player.getName() << endl;
-                          fout.close();
-                          outp.success("Player " + player.getName() + " succes add to auth list for world " + world_name);
-                          return;
-                      }
-                  }
+                  outp.error(msg1);
+                  return;
               }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_auth.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_auth.txt");
-                          fout << player.getName() << endl;
-                          fout.close();
-                          outp.success("Player " + player.getName() + " succes add to auth list for world " + world_name);
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_auth.txt", ios_base::app);
-                          fout << player.getName() << endl;
-                          fout.close();
-                          outp.success("Player " + player.getName() + " succes add to auth list for world " + world_name);
-                          return;
-                      }
-                  }
-              }
-              outp.error("You do not have permission to execute this command!");
-              return;
           }
           case Operation::Bancmd:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.bancmd";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "" || cmd == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "" && cmd != "")
@@ -523,94 +271,50 @@ public:
                       return;
                   }
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              else if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/" + world_name + "_cmd.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/" + world_name + "_cmd.txt");
+                      fout << cmd << endl;
+                      fout.close();
+                      outp.success("Command " + cmd + " succes add to ban list for world " + world_name);
+                      return;
+                  }
+                  else if (in.is_open())
+                  {
+                      in.close();
+                      ofstream fout("plugins/World Protect/" + world_name + "_cmd.txt", ios_base::app);
+                      fout << cmd << endl;
+                      fout.close();
+                      outp.success("Command " + cmd + " succes add to ban list for world " + world_name);
+                      return;
                   }
               }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
+              else
               {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_cmd.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_cmd.txt");
-                          fout << cmd << endl;
-                          fout.close();
-                          outp.success("Command " + cmd + " succes add to ban list for world " + world_name);
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_cmd.txt", ios_base::app);
-                          fout << cmd << endl;
-                          fout.close();
-                          outp.success("Command " + cmd + " succes add to ban list for world " + world_name);
-                          return;
-                      }
-                  }
+                  outp.error(msg1);
+                  return;
               }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_cmd.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_cmd.txt");
-                          fout << cmd << endl;
-                          fout.close();
-                          outp.success("Command " + cmd + " succes add to ban list for world " + world_name);
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_cmd.txt", ios_base::app);
-                          fout << cmd << endl;
-                          fout.close();
-                          outp.success("Command " + cmd + " succes add to ban list for world " + world_name);
-                          return;
-                      }
-                  }
-              }
-              outp.error("You do not have permission to execute this command!");
-              return;
           }
           case Operation::Unbancmd:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.bancmd";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "" || cmd == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "" && cmd != "")
@@ -642,108 +346,57 @@ public:
                       return;
                   }
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              else if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/" + world_name + "_cmd.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
+                      in.close();
+                      outp.error("Ban list is empty!");
+                      return;
+                  }
+                  else if (in.is_open())
+                  {
+                      string str;
+                      vector<string> cmds;
+                      while (getline(in, str))
                       {
-                          res_nick = n;
-                          break;
+                          if (str != cmd)
+                              cmds.push_back(str);
                       }
+                      in.close();
+                      string fn = "plugins/World Protect/" + world_name + "_cmd.txt";
+                      remove(fn.c_str());
+                      ofstream fout("plugins/World Protect/" + world_name + "_cmd.txt");
+                      for (auto v1 : cmds)
+                          fout << v1 << endl;
+                      fout.close();
+                      outp.success("Command " + cmd + " succes removed from ban list for world " + world_name);
+                      return;
                   }
               }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
+              else
               {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_cmd.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          outp.error("Ban list is empty!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          string str;
-                          vector<string> cmds;
-                          while (getline(in, str))
-                          {
-                              if (str != cmd)
-                                  cmds.push_back(str);
-                          }
-                          in.close();
-                          string fn = "plugins/World Protect/" + world_name + "_cmd.txt";
-                          remove(fn.c_str());
-                          ofstream fout("plugins/World Protect/" + world_name + "_cmd.txt");
-                          for (auto v1 : cmds)
-                              fout << v1 << endl;
-                          fout.close();
-                          outp.success("Command " + cmd + " succes removed from ban list for world " + world_name);
-                          return;
-                      }
-                  }
+                  outp.error(msg1);
+                  return;
               }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_cmd.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          outp.error("Ban list is empty!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          string str;
-                          vector<string> cmds;
-                          while (getline(in, str))
-                          {
-                              if (str != cmd)
-                                  cmds.push_back(str);
-                          }
-                          in.close();
-                          string fn = "plugins/World Protect/" + world_name + "_cmd.txt";
-                          remove(fn.c_str());
-                          ofstream fout("plugins/World Protect/" + world_name + "_cmd.txt");
-                          for (auto v1 : cmds)
-                              fout << v1 << endl;
-                          fout.close();
-                          outp.success("Command " + cmd + " succes removed from ban list for world " + world_name);
-                          return;
-                      }
-                  }
-              }
-              outp.error("You do not have permission to execute this command!");
-              return;
           }
           case Operation::Banitem:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.banitem";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "" || item == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "" && item != "")
@@ -768,94 +421,50 @@ public:
                       return;
                   }
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              else if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/" + world_name + "_items.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/" + world_name + "_items.txt");
+                      fout << item << endl;
+                      fout.close();
+                      outp.success("Item " + item + " succes add to ban list for world " + world_name);
+                      return;
+                  }
+                  else if (in.is_open())
+                  {
+                      in.close();
+                      ofstream fout("plugins/World Protect/" + world_name + "_items.txt", ios_base::app);
+                      fout << item << endl;
+                      fout.close();
+                      outp.success("Item " + item + " succes add to ban list for world " + world_name);
+                      return;
                   }
               }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
+              else
               {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_items.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_items.txt");
-                          fout << item << endl;
-                          fout.close();
-                          outp.success("Item " + item + " succes add to ban list for world " + world_name);
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_items.txt", ios_base::app);
-                          fout << item << endl;
-                          fout.close();
-                          outp.success("Item " + item + " succes add to ban list for world " + world_name);
-                          return;
-                      }
-                  }
+                  outp.error(msg1);
+                  return;
               }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_items.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_items.txt");
-                          fout << item << endl;
-                          fout.close();
-                          outp.success("Item " + item + " succes add to ban list for world " + world_name);
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_items.txt", ios_base::app);
-                          fout << item << endl;
-                          fout.close();
-                          outp.success("Item " + item + " succes add to ban list for world " + world_name);
-                          return;
-                      }
-                  }
-              }
-              outp.error("You do not have permission to execute this command!");
-              return;
           }
           case Operation::Unbanitem:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.banitem";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "" || item == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "" && item != "")
@@ -887,108 +496,57 @@ public:
                       return;
                   }
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              else if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/" + world_name + "_items.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
+                      in.close();
+                      outp.error("Ban list is empty!");
+                      return;
+                  }
+                  else if (in.is_open())
+                  {
+                      string str;
+                      vector<string> items;
+                      while (getline(in, str))
                       {
-                          res_nick = n;
-                          break;
+                          if (str != item)
+                              items.push_back(str);
                       }
+                      in.close();
+                      string fn = "plugins/World Protect/" + world_name + "_items.txt";
+                      remove(fn.c_str());
+                      ofstream fout("plugins/World Protect/" + world_name + "_items.txt");
+                      for (auto v1 : items)
+                          fout << v1 << endl;
+                      fout.close();
+                      outp.success("Item " + item + " succes removed from ban list for world " + world_name);
+                      return;
                   }
               }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
+              else
               {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_items.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          outp.error("Ban list is empty!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          string str;
-                          vector<string> items;
-                          while (getline(in, str))
-                          {
-                              if (str != item)
-                                  items.push_back(str);
-                          }
-                          in.close();
-                          string fn = "plugins/World Protect/" + world_name + "_items.txt";
-                          remove(fn.c_str());
-                          ofstream fout("plugins/World Protect/" + world_name + "_items.txt");
-                          for (auto v1 : items)
-                              fout << v1 << endl;
-                          fout.close();
-                          outp.success("Item " + item + " succes removed from ban list for world " + world_name);
-                          return;
-                      }
-                  }
+                  outp.error(msg1);
+                  return;
               }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_items.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          outp.error("Ban list is empty!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          string str;
-                          vector<string> items;
-                          while (getline(in, str))
-                          {
-                              if (str != item)
-                                  items.push_back(str);
-                          }
-                          in.close();
-                          string fn = "plugins/World Protect/" + world_name + "_items.txt";
-                          remove(fn.c_str());
-                          ofstream fout("plugins/World Protect/" + world_name + "_items.txt");
-                          for (auto v1 : items)
-                              fout << v1 << endl;
-                          fout.close();
-                          outp.success("Item " + item + " succes removed from ban list for world " + world_name);
-                          return;
-                      }
-                  }
-              }
-              outp.error("You do not have permission to execute this command!");
-              return;
           }
           case Operation::Border:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.border";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "" && opval1 != "none")
@@ -1030,134 +588,67 @@ public:
                   outp.success("Brders for world " + world_name + " succefull removed!");
                   return;
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)) && world_name != "" && opval1 != "none")
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/borders.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/borders.txt");
+                      fout << world_name << " " << to_string(x1) << ":" << to_string(z1) << ":" << to_string(x2) << ":" << to_string(z2) << endl;
+                      outp.success("Border for world " + world_name + "succefull set!");
+                      return;
+                  }
+                  else if (in.is_open())
+                  {
+                      in.close();
+                      ofstream fout("plugins/World Protect/borders.txt", ios_base::app);
+                      fout << world_name << " " << to_string(x1) << ":" << to_string(z1) << ":" << to_string(x2) << ":" << to_string(z2) << endl;
+                      outp.success("Border for world " + world_name + "succefull set!");
+                      return;
                   }
               }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
+              else if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)) && world_name != "" && opval1 == "none")
               {
-                  if (v == perm)
+                  ifstream in("plugins/World Protect/borders.txt");
+                  string str;
+                  vector<string> borders;
+                  while (getline(in, str))
                   {
-                      if (opval1 != "none")
-                      {
-                          ifstream in("plugins/World Protect/borders.txt");
-                          if (!in.is_open())
-                          {
-                              in.close();
-                              ofstream fout("plugins/World Protect/borders.txt");
-                              fout << world_name << " " << to_string(x1) << ":" << to_string(z1) << ":" << to_string(x2) << ":" << to_string(z2) << endl;
-                              outp.success("Border for world " + world_name + "succefull set!");
-                              return;
-                          }
-                          else if (in.is_open())
-                          {
-                              in.close();
-                              ofstream fout("plugins/World Protect/borders.txt", ios_base::app);
-                              fout << world_name << " " << to_string(x1) << ":" << to_string(z1) << ":" << to_string(x2) << ":" << to_string(z2) << endl;
-                              outp.success("Border for world " + world_name + "succefull set!");
-                              return;
-                          }
-                      }
-                      else if (opval1 == "none")
-                      {
-                          ifstream in("plugins/World Protect/borders.txt");
-                          string str;
-                          vector<string> borders;
-                          while (getline(in, str))
-                          {
-                              if (str != world_name)
-                                  borders.push_back(str);
-                          }
-                          in.close();
-                          remove("plugins/World Protect/borders.txt");
-                          ofstream fout("plugins/World Protect/borders.txt");
-                          for (auto v1 : borders)
-                              fout << v1 << endl;
-                          fout.close();
-                          outp.success("Brders for world " + world_name + " succefull removed!");
-                          return;
-                      }
+                      if (str != world_name)
+                          borders.push_back(str);
                   }
+                  in.close();
+                  remove("plugins/World Protect/borders.txt");
+                  ofstream fout("plugins/World Protect/borders.txt");
+                  for (auto v1 : borders)
+                      fout << v1 << endl;
+                  fout.close();
+                  outp.success("Brders for world " + world_name + " succefull removed!");
+                  return;
               }
-              for (auto v : gr.perms)
+              else
               {
-                  if (v == perm)
-                  {
-                      if (opval1 != "none")
-                      {
-                          ifstream in("plugins/World Protect/borders.txt");
-                          if (!in.is_open())
-                          {
-                              in.close();
-                              ofstream fout("plugins/World Protect/borders.txt");
-                              fout << world_name << " " << to_string(x1) << ":" << to_string(z1) << ":" << to_string(x2) << ":" << to_string(z2) << endl;
-                              outp.success("Border for world " + world_name + "succefull set!");
-                              return;
-                          }
-                          else if (in.is_open())
-                          {
-                              in.close();
-                              ofstream fout("plugins/World Protect/borders.txt", ios_base::app);
-                              fout << world_name << " " << to_string(x1) << ":" << to_string(z1) << ":" << to_string(x2) << ":" << to_string(z2) << endl;
-                              outp.success("Border for world " + world_name + "succefull set!");
-                              return;
-                          }
-                      }
-                      else if (opval1 == "none")
-                      {
-                          ifstream in("plugins/World Protect/borders.txt");
-                          string str;
-                          vector<string> borders;
-                          while (getline(in, str))
-                          {
-                              if (str != world_name)
-                                  borders.push_back(str);
-                          }
-                          in.close();
-                          remove("plugins/World Protect/borders.txt");
-                          ofstream fout("plugins/World Protect/borders.txt");
-                          for (auto v1 : borders)
-                              fout << v1 << endl;
-                          fout.close();
-                          outp.success("Brders for world " + world_name + " succefull removed!");
-                          return;
-                      }
-                  }
+                  outp.error(msg1);
+                  return;
               }
-              outp.error("You do not have permission to execute this command!");
-              return;
           }
           case Operation::Gm:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.gm";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "" && opval1 != "none")
@@ -1201,138 +692,69 @@ public:
                   outp.success("Gamemode in world" + world_name + " succefull reset!");
                   return;
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)) && world_name != "" && opval1 != "none")
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/gm.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/gm.txt");
+                      fout << world_name << ":" << to_string(gm) << endl;
+                      fout.close();
+                      outp.success("Gamemode " + to_string(gm) + " succefull set for world " + world_name);
+                      return;
+                  }
+                  else if (in.is_open())
+                  {
+                      in.close();
+                      ofstream fout("plugins/World Protect/gm.txt", ios_base::app);
+                      fout << world_name << ":" << to_string(gm) << endl;
+                      fout.close();
+                      outp.success("Gamemode " + to_string(gm) + " succefull set for world " + world_name);
+                      return;
                   }
               }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
+              else if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)) && world_name != "" && opval1 == "none")
               {
-                  if (v == perm)
+                  ifstream in("plugins/World Protect/borders.txt");
+                  string str;
+                  vector<string> borders;
+                  while (getline(in, str))
                   {
-                      if (opval1 != "none")
-                      {
-                          ifstream in("plugins/World Protect/gm.txt");
-                          if (!in.is_open())
-                          {
-                              in.close();
-                              ofstream fout("plugins/World Protect/gm.txt");
-                              fout << world_name << ":" << to_string(gm) << endl;
-                              fout.close();
-                              outp.success("Gamemode " + to_string(gm) + " succefull set for world " + world_name);
-                              return;
-                          }
-                          else if (in.is_open())
-                          {
-                              in.close();
-                              ofstream fout("plugins/World Protect/gm.txt", ios_base::app);
-                              fout << world_name << ":" << to_string(gm) << endl;
-                              fout.close();
-                              outp.success("Gamemode " + to_string(gm) + " succefull set for world " + world_name);
-                              return;
-                          }
-                      }
-                      else if (opval1 == "none")
-                      {
-                       ifstream in("plugins/World Protect/borders.txt");
-                       string str;
-                       vector<string> borders;
-                       while (getline(in, str))
-                       {
-                           if (str != world_name)
-                               borders.push_back(str);
-                       }
-                       in.close();
-                       remove("plugins/World Protect/borders.txt");
-                       ofstream fout("plugins/World Protect/borders.txt");
-                       for (auto v1 : borders)
-                           fout << v1 << endl;
-                       fout.close();
-                       outp.success("Gamemode in world" + world_name + " succefull reset!");
-                       return;
-                      }
+                      if (str != world_name)
+                          borders.push_back(str);
                   }
+                  in.close();
+                  remove("plugins/World Protect/borders.txt");
+                  ofstream fout("plugins/World Protect/borders.txt");
+                  for (auto v1 : borders)
+                      fout << v1 << endl;
+                  fout.close();
+                  outp.success("Gamemode in world" + world_name + " succefull reset!");
+                  return;
               }
-              for (auto v : gr.perms)
+              else
               {
-                  if (v == perm)
-                  {
-                      if (opval1 != "none")
-                      {
-                          ifstream in("plugins/World Protect/gm.txt");
-                          if (!in.is_open())
-                          {
-                              in.close();
-                              ofstream fout("plugins/World Protect/gm.txt");
-                              fout << world_name << ":" << to_string(gm) << endl;
-                              fout.close();
-                              outp.success("Gamemode " + to_string(gm) + " succefull set for world " + world_name);
-                              return;
-                          }
-                          else if (in.is_open())
-                          {
-                              in.close();
-                              ofstream fout("plugins/World Protect/gm.txt", ios_base::app);
-                              fout << world_name << ":" << to_string(gm) << endl;
-                              fout.close();
-                              outp.success("Gamemode " + to_string(gm) + " succefull set for world " + world_name);
-                              return;
-                          }
-                      }
-                      else if (opval1 == "none")
-                      {
-                          ifstream in("plugins/World Protect/borders.txt");
-                          string str;
-                          vector<string> borders;
-                          while (getline(in, str))
-                          {
-                              if (str != world_name)
-                                  borders.push_back(str);
-                          }
-                          in.close();
-                          remove("plugins/World Protect/borders.txt");
-                          ofstream fout("plugins/World Protect/borders.txt");
-                          for (auto v1 : borders)
-                              fout << v1 << endl;
-                          fout.close();
-                          outp.success("Gamemode in world" + world_name + " succefull reset!");
-                          return;
-                      }
-                  }
+                  outp.error(msg1);
+                  return;
               }
-              outp.error("You do not have permission to execute this command!");
-              return;
           }
           case Operation::Lock:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.limit";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "")
@@ -1357,94 +779,50 @@ public:
                       return;
                   }
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/lock.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/lock.txt");
+                      fout << world_name << endl;
+                      fout.close();
+                      outp.success(world_name + " world succefull locked for building/destroyed!");
+                      return;
+                  }
+                  else if (in.is_open())
+                  {
+                      in.close();
+                      ofstream fout("plugins/World Protect/lock.txt", ios_base::app);
+                      fout << world_name << endl;
+                      fout.close();
+                      outp.success(world_name + " world succefull locked for building/destroyed!");
+                      return;
                   }
               }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
+              else
               {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/lock.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/lock.txt");
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success(world_name + " world succefull locked for building/destroyed!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/lock.txt", ios_base::app);
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success(world_name + " world succefull locked for building/destroyed!");
-                          return;
-                      }
-                  }
+                  outp.error(msg1);
+                  return;
               }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/lock.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/lock.txt");
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success(world_name + " world succefull locked for building/destroyed!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/lock.txt", ios_base::app);
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success(world_name + " world succefull locked for building/destroyed!");
-                          return;
-                      }
-                  }
-              }
-              outp.error("You do not have permission to execute this command!");
-              return;
           }
           case Operation::Max:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.limit";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "")
@@ -1469,94 +847,50 @@ public:
                       return;
                   }
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/limit.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/limit.txt");
+                      fout << world_name << ":" << max_xal << endl;
+                      fout.close();
+                      outp.success("In world " + world_name + " player limit is set to " + to_string(max_xal) + "!");
+                      return;
+                  }
+                  else if (in.is_open())
+                  {
+                      in.close();
+                      ofstream fout("plugins/World Protect/limit.txt", ios_base::app);
+                      fout << world_name << ":" << max_xal << endl;
+                      fout.close();
+                      outp.success("In world " + world_name + " player limit is set to " + to_string(max_xal) + "!");
+                      return;
                   }
               }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
+              else
               {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/limit.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/limit.txt");
-                          fout << world_name << ":" << max_xal << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + " player limit is set to " + to_string(max_xal) + "!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/limit.txt", ios_base::app);
-                          fout << world_name << ":" << max_xal << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + " player limit is set to " + to_string(max_xal) + "!");
-                          return;
-                      }
-                  }
+                  outp.error(msg1);
+                  return;
               }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/limit.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/limit.txt");
-                          fout << world_name << ":" << max_xal << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + " player limit is set to " + to_string(max_xal) + "!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/limit.txt", ios_base::app);
-                          fout << world_name << ":" << max_xal << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + " player limit is set to " + to_string(max_xal) + "!");
-                          return;
-                      }
-                  }
-              }
-              outp.error("You do not have permission to execute this command!");
-              return;
           }
           case Operation::Motd:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.wpmotd";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (motd == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && motd != "")
@@ -1572,7 +906,7 @@ public:
                       outp.success("Motd set successfully!");
                       return;
                   }
-                  else  if (!in.is_open())
+                  else if (!in.is_open())
                   {
                       in.close();
                       ofstream out("plugins/World Protect/motd.txt");
@@ -1584,100 +918,53 @@ public:
                   }
                   return;
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/motd.txt");
+                  if (in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
-                  }
-              }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/motd.txt");
-                      if (in.is_open())
-                      {
-                          in.close();
-                          ofstream out("plugins/World Protect/motd.txt");
-                          out << motd << endl;
-                          out.close();
-                          LL::setServerMotd(motd);
-                          outp.success("Motd set successfully!");
-                          return;
-                      }
-                      else  if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream out("plugins/World Protect/motd.txt");
-                          out << motd << endl;
-                          out.close();
-                          LL::setServerMotd(motd);
-                          outp.success("Motd set successfully!");
-                          return;
-                      }
+                      in.close();
+                      ofstream out("plugins/World Protect/motd.txt");
+                      out << motd << endl;
+                      out.close();
+                      LL::setServerMotd(motd);
+                      outp.success("Motd set successfully!");
                       return;
                   }
-              }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
+                  else if (!in.is_open())
                   {
-                      ifstream in("plugins/World Protect/motd.txt");
-                      if (in.is_open())
-                      {
-                          in.close();
-                          ofstream out("plugins/World Protect/motd.txt");
-                          out << motd << endl;
-                          out.close();
-                          LL::setServerMotd(motd);
-                          outp.success("Motd set successfully!");
-                          return;
-                      }
-                      else  if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream out("plugins/World Protect/motd.txt");
-                          out << motd << endl;
-                          out.close();
-                          LL::setServerMotd(motd);
-                          outp.success("Motd set successfully!");
-                          return;
-                      }
+                      in.close();
+                      ofstream out("plugins/World Protect/motd.txt");
+                      out << motd << endl;
+                      out.close();
+                      LL::setServerMotd(motd);
+                      outp.success("Motd set successfully!");
                       return;
                   }
+                  return;
               }
-              outp.error("You do not have permission to execute this command!");
-              return;
+              else
+              {
+                  outp.error(msg1);
+                  return;
+              }
           }
           case Operation::Noexplode:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.noexplode";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "" || opval1 == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "" && opval1 != "")
@@ -1703,96 +990,51 @@ public:
                   }
                   return;
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/noexplode.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
-                  }
-              }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/noexplode.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/noexplode.txt");
-                          fout << world_name << ":" << opval1 << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + " noexplode set to " + opval1 + "!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/noexplode.txt", ios_base::app);
-                          fout << world_name << ":" << opval1 << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + " noexplode set to " + opval1 + "!");
-                          return;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/noexplode.txt");
+                      fout << world_name << ":" << opval1 << endl;
+                      fout.close();
+                      outp.success("In world " + world_name + " noexplode set to " + opval1 + "!");
                       return;
                   }
-              }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
+                  else if (in.is_open())
                   {
-                      ifstream in("plugins/World Protect/noexplode.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/noexplode.txt");
-                          fout << world_name << ":" << opval1 << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + " noexplode set to " + opval1 + "!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/noexplode.txt", ios_base::app);
-                          fout << world_name << ":" << opval1 << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + " noexplode set to " + opval1 + "!");
-                          return;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/noexplode.txt", ios_base::app);
+                      fout << world_name << ":" << opval1 << endl;
+                      fout.close();
+                      outp.success("In world " + world_name + " noexplode set to " + opval1 + "!");
                       return;
                   }
+                  return;
               }
-              outp.error("You do not have permission to execute this command!");
-              return;
+              else
+              {
+                  outp.error(msg1);
+                  return;
+              }
           }
           case Operation::Protect:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.protect";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "")
@@ -1818,96 +1060,51 @@ public:
                   }
                   return;
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/protect.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
-                  }
-              }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/protect.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/protect.txt");
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success("World " + world_name + " succefull protected!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/protect.txt", ios_base::app);
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success("World " + world_name + " succefull protected!");
-                          return;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/protect.txt");
+                      fout << world_name << endl;
+                      fout.close();
+                      outp.success("World " + world_name + " succefull protected!");
                       return;
                   }
-              }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
+                  else if (in.is_open())
                   {
-                      ifstream in("plugins/World Protect/protect.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/protect.txt");
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success("World " + world_name + " succefull protected!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/protect.txt", ios_base::app);
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success("World " + world_name + " succefull protected!");
-                          return;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/protect.txt", ios_base::app);
+                      fout << world_name << endl;
+                      fout.close();
+                      outp.success("World " + world_name + " succefull protected!");
                       return;
                   }
+                  return;
               }
-              outp.error("You do not have permission to execute this command!");
-              return;
+              else
+              {
+                  outp.error(msg1);
+                  return;
+              }
           }
           case Operation::Pvp:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.pvp";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "")
@@ -1933,96 +1130,51 @@ public:
                   }
                   return;
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/pvp.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
-                  }
-              }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/pvp.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/pvp.txt");
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + "pvp succefull off!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/pvp.txt", ios_base::app);
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + "pvp succefull off!");
-                          return;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/pvp.txt");
+                      fout << world_name << endl;
+                      fout.close();
+                      outp.success("In world " + world_name + "pvp succefull off!");
                       return;
                   }
-              }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
+                  else if (in.is_open())
                   {
-                      ifstream in("plugins/World Protect/pvp.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/pvp.txt");
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + "pvp succefull off!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/pvp.txt", ios_base::app);
-                          fout << world_name << endl;
-                          fout.close();
-                          outp.success("In world " + world_name + "pvp succefull off!");
-                          return;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/pvp.txt", ios_base::app);
+                      fout << world_name << endl;
+                      fout.close();
+                      outp.success("In world " + world_name + "pvp succefull off!");
                       return;
                   }
+                  return;
               }
-              outp.error("You do not have permission to execute this command!");
-              return;
+              else
+              {
+                  outp.error(msg1);
+                  return;
+              }
           }
           case Operation::Rm:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.addrm";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "" || player.getName() == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg1);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "" && player.getName() != "")
@@ -2045,90 +1197,48 @@ public:
                   outp.success("Player " + player.getName() + " removed from " + world_name + "auth list!");
                   return;
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/" + world_name + "_auth.txt");
+                  vector<string> players;
+                  string str;
+                  while (getline(in, str))
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
+                      if (str != player.getName())
+                          players.push_back(str);
                   }
+                  in.close();
+                  string fn = "plugins/World Protect/" + world_name + "_auth.txt";
+                  remove(fn.c_str());
+                  ofstream fout(fn);
+                  for (auto v1 : players)
+                      fout << v1 << endl;
+                  fout.close();
+                  outp.success("Player " + player.getName() + " removed from " + world_name + "auth list!");
+                  return;
               }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
+              else
               {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_auth.txt");
-                      vector<string> players;
-                      string str;
-                      while (getline(in, str))
-                      {
-                          if (str != player.getName())
-                              players.push_back(str);
-                      }
-                      in.close();
-                      string fn = "plugins/World Protect/" + world_name + "_auth.txt";
-                      remove(fn.c_str());
-                      ofstream fout(fn);
-                      for (auto v1 : players)
-                          fout << v1 << endl;
-                      fout.close();
-                      outp.success("Player " + player.getName() + " removed from " + world_name + "auth list!");
-                      return;
-                  }
+                  outp.error(msg1);
+                  return;
               }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_auth.txt");
-                      vector<string> players;
-                      string str;
-                      while (getline(in, str))
-                      {
-                          if (str != player.getName())
-                              players.push_back(str);
-                      }
-                      in.close();
-                      string fn = "plugins/World Protect/" + world_name + "_auth.txt";
-                      remove(fn.c_str());
-                      ofstream fout(fn);
-                      for (auto v1 : players)
-                          fout << v1 << endl;
-                      fout.close();
-                      outp.success("Player " + player.getName() + " removed from " + world_name + "auth list!");
-                      return;
-                  }
-              }
-              outp.error("You do not have permission to execute this command!");
-              return;
           }
           case Operation::Breakable:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.unbreakable";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "" || block_id == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "" && block_id != "")
@@ -2154,93 +1264,48 @@ public:
                   }
                   return;
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/" + world_name + "_blocks.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
-                  }
-              }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_blocks.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_blocks.txt");
-                          fout << block_id << endl;
-                          fout.close();
-                          outp.success("Block " + block_id + " succefull baned in world " + world_name + "!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_blocks.txt", ios_base::app);
-                          fout << block_id << endl;
-                          fout.close();
-                          outp.success("Block " + block_id + " succefull baned in world " + world_name + "!");
-                          return;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/" + world_name + "_blocks.txt");
+                      fout << block_id << endl;
+                      fout.close();
+                      outp.success("Block " + block_id + " succefull baned in world " + world_name + "!");
                       return;
                   }
-              }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
+                  else if (in.is_open())
                   {
-                      ifstream in("plugins/World Protect/" + world_name + "_blocks.txt");
-                      if (!in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_blocks.txt");
-                          fout << block_id << endl;
-                          fout.close();
-                          outp.success("Block " + block_id + " succefull baned in world " + world_name + "!");
-                          return;
-                      }
-                      else if (in.is_open())
-                      {
-                          in.close();
-                          ofstream fout("plugins/World Protect/" + world_name + "_blocks.txt", ios_base::app);
-                          fout << block_id << endl;
-                          fout.close();
-                          outp.success("Block " + block_id + " succefull baned in world " + world_name + "!");
-                          return;
-                      }
+                      in.close();
+                      ofstream fout("plugins/World Protect/" + world_name + "_blocks.txt", ios_base::app);
+                      fout << block_id << endl;
+                      fout.close();
+                      outp.success("Block " + block_id + " succefull baned in world " + world_name + "!");
                       return;
                   }
+                  return;
               }
-              outp.error("You do not have permission to execute this command!");
-              return;
+              else
+              {
+                  outp.error(msg1);
+                  return;
+              }
           }
           case Operation::Unbreakable:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.unbreakable";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "" || block_id == "")
               {
                   outp.error("Invalid argument command!");
@@ -2266,90 +1331,51 @@ public:
                   outp.success("Block " + block_id + " succefull unbaned in world " + world_name + "!");
                   return;
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/" + world_name + "_blocks.txt");
+                  if (!in.is_open())
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
-                  }
-              }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/" + world_name + "_blocks.txt");
-                      vector<string> blocks;
-                      string str;
-                      while (getline(in, str))
-                      {
-                          if (str != block_id)
-                              blocks.push_back(str);
-                      }
                       in.close();
-                      string fn = "plugins/World Protect/" + world_name + "_blocks.txt";
-                      remove(fn.c_str());
-                      ofstream fout(fn);
-                      for (auto v1 : blocks)
-                          fout << v1 << endl;
+                      ofstream fout("plugins/World Protect/" + world_name + "_blocks.txt");
+                      fout << block_id << endl;
                       fout.close();
-                      outp.success("Block " + block_id + " succefull unbaned in world " + world_name + "!");
+                      outp.success("Block " + block_id + " succefull baned in world " + world_name + "!");
                       return;
                   }
-              }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
+                  else if (in.is_open())
                   {
-                      ifstream in("plugins/World Protect/" + world_name + "_blocks.txt");
-                      vector<string> blocks;
-                      string str;
-                      while (getline(in, str))
-                      {
-                          if (str != block_id)
-                              blocks.push_back(str);
-                      }
                       in.close();
-                      string fn = "plugins/World Protect/" + world_name + "_blocks.txt";
-                      remove(fn.c_str());
-                      ofstream fout(fn);
-                      for (auto v1 : blocks)
-                          fout << v1 << endl;
+                      ofstream fout("plugins/World Protect/" + world_name + "_blocks.txt", ios_base::app);
+                      fout << block_id << endl;
                       fout.close();
-                      outp.success("Block " + block_id + " succefull unbaned in world " + world_name + "!");
+                      outp.success("Block " + block_id + " succefull baned in world " + world_name + "!");
                       return;
                   }
+                  return;
               }
-              outp.error("You do not have permission to execute this command!");
-              return;
+              else
+              {
+                  outp.error(msg1);
+                  return;
+              }
           }
           case Operation::Unlock:
           {
+              auto id = ori.getPlayer()->getDimensionId();
+              string dim;
+              if (id == 0)
+                  dim = "OverWorld";
+              else if (id == 1)
+                  dim = "Nether";
+              else if (id == 2)
+                  dim = "End";
+              string nick = ori.getPlayer()->getName();
+              string msg = get_msg("invalidArgument"), msg1 = get_msg("permissionDenied");
               string perm = "wp.cmd.limit";
-              _Groups    groups;
-              Users      users;
-              auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-              for (const auto& p : nodes["users"])
-              {
-                  users.users.push_back(p.as<_User>());
-              }
-              auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-              for (const auto& p : nodes1["groups"])
-              {
-                  groups.groups.push_back(p.as<_Group>());
-              }
               if (world_name == "")
               {
-                  outp.error("Invalid argument command!");
+                  outp.error(msg);
                   return;
               }
               if (ori.getPermissionsLevel() == CommandPermissionLevel::Console && world_name != "")
@@ -2372,71 +1398,31 @@ public:
                   outp.success(world_name + " world succefull unlocked for building/destroyed!");
                   return;
               }
-              auto plain = ori.getPlayer()->getName();
-              using namespace std;
-              auto nick = split(plain, " ");
-              string res_nick;
-              for (auto n : nick)
+              if ((checkPerm(nick, perm) || checkPerm(nick, "plugins.*") || checkPerm(nick, "wp.*") || checkPermWorlds(nick, perm, dim) || checkPermWorlds(nick, "plugins.*", dim) || checkPermWorlds(nick, "wp.*", dim)))
               {
-                  for (auto v : users.users)
+                  ifstream in("plugins/World Protect/lock.txt");
+                  vector<string> worlds;
+                  string str;
+                  while (getline(in, str))
                   {
-                      if (n == v.nickname)
-                      {
-                          res_nick = n;
-                          break;
-                      }
+                      if (str != world_name)
+                          worlds.push_back(str);
                   }
+                  in.close();
+                  string fn = "plugins/World Protect/lock.txt";
+                  remove(fn.c_str());
+                  ofstream fout(fn);
+                  for (auto v1 : worlds)
+                      fout << v1 << endl;
+                  fout.close();
+                  outp.success(world_name + " world succefull unlocked for building/destroyed!");
+                  return;
               }
-              auto pl = load_user(res_nick);
-              auto gr = load_group(pl.group);
-              for (auto v : pl.permissions)
+              else
               {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/lock.txt");
-                      vector<string> worlds;
-                      string str;
-                      while (getline(in, str))
-                      {
-                          if (str != world_name)
-                              worlds.push_back(str);
-                      }
-                      in.close();
-                      string fn = "plugins/World Protect/lock.txt";
-                      remove(fn.c_str());
-                      ofstream fout(fn);
-                      for (auto v1 : worlds)
-                          fout << v1 << endl;
-                      fout.close();
-                      outp.success(world_name + " world succefull unlocked for building/destroyed!");
-                      return;
-                  }
+                  outp.error(msg1);
+                  return;
               }
-              for (auto v : gr.perms)
-              {
-                  if (v == perm)
-                  {
-                      ifstream in("plugins/World Protect/lock.txt");
-                      vector<string> worlds;
-                      string str;
-                      while (getline(in, str))
-                      {
-                          if (str != world_name)
-                              worlds.push_back(str);
-                      }
-                      in.close();
-                      string fn = "plugins/World Protect/lock.txt";
-                      remove(fn.c_str());
-                      ofstream fout(fn);
-                      for (auto v1 : worlds)
-                          fout << v1 << endl;
-                      fout.close();
-                      outp.success(world_name + " world succefull unlocked for building/destroyed!");
-                      return;
-                  }
-              }
-              outp.error("You do not have permission to execute this command!");
-              return;
           }
         }
     }
@@ -2453,7 +1439,6 @@ public:
         r->addEnum<Operation>("unbanitem", { { "unbanitem", Operation::Unbanitem } });
         r->addEnum<Operation>("gm", { {"gm", Operation::Gm} });
         r->addEnum<Operation>("lock", { { "lock", Operation::Lock } });
-       // r->addEnum<Operation>("ls", { {"ls", Operation::Ls} });
         r->addEnum<Operation>("max", { { "max", Operation::Max } });
         r->addEnum<Operation>("motd", { {"motd", Operation::Motd} });
         r->addEnum<Operation>("noexplode", { {"noexplode", Operation::Noexplode} });
@@ -2477,8 +1462,6 @@ public:
         r->registerOverload<Wp>("wp", makeOptional<CommandParameterDataType::ENUM>(&Wp::op, "lock", "lock").addOptions((CommandParameterOption)1),makeMandatory(&Wp::world_name, "world"));
         r->registerOverload<Wp>("wp", makeOptional<CommandParameterDataType::ENUM>(&Wp::op, "unlock", "unlock").addOptions((CommandParameterOption)1),makeMandatory(&Wp::world_name, "world"));
         r->registerOverload<Wp>("wp", makeMandatory<CommandParameterDataType::ENUM>(&Wp::op, "_add", "_add").addOptions((CommandParameterOption)1), makeMandatory(&Wp::world_name, "world"), makeOptional(&Wp::player, "player"));
-       // r->registerOverload<Wp>("wp", makeMandatory<CommandParameterDataType::ENUM>(&Wp::op, "ls", "ls").addOptions((CommandParameterOption)1));
-        //r->registerOverload<Wp>("wp", makeMandatory<CommandParameterDataType::ENUM>(&Wp::op, "ls", "ls").addOptions((CommandParameterOption)1), makeOptional(&Wp::world_name, "world"));
         r->registerOverload<Wp>("wp", makeOptional<CommandParameterDataType::ENUM>(&Wp::op, "max", "max").addOptions((CommandParameterOption)1),makeMandatory(&Wp::world_name, "world"));
         r->registerOverload<Wp>("wp", makeOptional<CommandParameterDataType::ENUM>(&Wp::op, "max", "max").addOptions((CommandParameterOption)1), makeMandatory(&Wp::world_name, "world"), makeOptional(&Wp::max_xal, "value"));
         r->registerOverload<Wp>("wp", makeMandatory<CommandParameterDataType::ENUM>(&Wp::op, "motd", "motd").addOptions((CommandParameterOption)1), makeOptional(&Wp::motd, "text"));
@@ -2500,7 +1483,7 @@ BOOL APIENTRY DllMain( HMODULE hModule,
     switch (ul_reason_for_call)
     {
     case DLL_PROCESS_ATTACH:
-        LL::registerPlugin("WorldProtect", "Порт WorldProtect из PMMP",LL::Version(0, 0, 0, LL::Version::Release));
+        LL::registerPlugin("WorldProtect", "Порт WorldProtect из PMMP",LL::Version(1, 0, 1, LL::Version::Release),"https://github.com/MCBEPluginModer/World-Protect");
     case DLL_THREAD_ATTACH:
     case DLL_THREAD_DETACH:
     case DLL_PROCESS_DETACH:
@@ -2518,20 +1501,10 @@ extern "C" {
     }
 }
 
+enum GameType;
+
 THook(bool, "?changeDimension@ServerPlayer@@UEAAXV?$AutomaticID@VDimension@@H@@_N@Z", ServerPlayer* _this, AutomaticID<Dimension, int> di, bool b)
 {
-    _Groups    groups;
-    Users      users;
-    auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
-    for (const auto& p : nodes["users"])
-    {
-        users.users.push_back(p.as<_User>());
-    }
-    auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-    for (const auto& p : nodes1["groups"])
-    {
-        groups.groups.push_back(p.as<_Group>());
-    }
     auto dimId = di;
     string dim;
     if (dimId == 0)
@@ -2556,8 +1529,12 @@ THook(bool, "?changeDimension@ServerPlayer@@UEAAXV?$AutomaticID@VDimension@@H@@_
     in3.close();
     int gamemode = -1;
     gamemode = gm[dim];
+    using namespace GameTypeConv;
     if (gamemode != -1)
-     _this->setPlayerGameType(GameTypeConv::intToGameType(gamemode));
+    {
+        ::GameType gmm = (::GameType)GameTypeConv::intToGameType(gamemode);
+        _this->setPlayerGameType(gmm);
+    }
     string str;
     string str1;
     ifstream in1("plugins/World Protect/limit.txt");
@@ -2599,7 +1576,7 @@ bool makeDir(const char* dir)
 
 void entry()
 {
-    makeDir("plguins/World Protect");
+    makeDir("plugins/World Protect");
     Event::ServerStartedEvent::subscribe([](const Event::ServerStartedEvent& ev)
         {
             ifstream in("plugins/World Protect/motd.txt");
@@ -2737,7 +1714,7 @@ void entry()
             in.close();
             return 1;
     });
-    Event::PlayerTakeItemEvent::subscribe([](const Event::PlayerTakeItemEvent& ev)
+    Event::PlayerPickupItemEvent::subscribe([](const Event::PlayerPickupItemEvent& ev)
         {
             if (ev.mPlayer == nullptr)
             {
@@ -2794,17 +1771,11 @@ void entry()
         });
     Event::PlayerPlaceBlockEvent::subscribe([](const  Event::PlayerPlaceBlockEvent& ev) 
     {
-            _Groups    groups;
             Users      users;
-            auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
+            auto nodes = YAML::LoadFile("plugins/Permissions Ex/users.yml");
             for (const auto& p : nodes["users"])
             {
                 users.users.push_back(p.as<_User>());
-            }
-            auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-            for (const auto& p : nodes1["groups"])
-            {
-                groups.groups.push_back(p.as<_Group>());
             }
             BlockInstance bl = ev.mBlockInstance;
             auto blockName = bl.getBlock()->getTypeName();
@@ -2845,53 +1816,21 @@ void entry()
                     }
                 }
             }
-            bool is_usrperm = false, is_grperm = false;
-            auto pl = load_user(res_nick);
-            auto gr = load_group(pl.group);
-            bool is_block = false;
-            for (auto v : lock_worlds)
+            string perm = "wp.cmd.protect.auth";
+            if ((checkPerm(res_nick, perm) || checkPerm(res_nick, "plugins.*") || checkPerm(res_nick, "wp.*") || checkPermWorlds(res_nick, perm, dim) || checkPermWorlds(res_nick, "plugins.*", dim) || checkPermWorlds(res_nick, "wp.*", dim)))
             {
-                if (dim == v)
-                {
-                    is_block = true;
-                    break;
-                }
+                return 1;
             }
-            for (auto v : pl.permissions)
-            {
-                if (v == "wp.cmd.protect.auth")
-                {
-                    is_usrperm = true;
-                    break;
-                }
-            }
-            for (auto v : gr.perms)
-            {
-                if (v == "wp.cmd.protect.auth")
-                {
-                    is_grperm = true;
-                    break;
-                }
-            }
-            bool is_auth = false;
-            for (auto nick1 : auth_players)
-            {
-                if (nick1 == res_nick)
-                {
-                    is_auth = true;
-                    break;
-                }
-            }
-            if (is_block && !is_usrperm && !is_grperm && !is_auth)
+            else
             {
                 ev.mPlayer->sendText("[World Protectd]: This is world locked for building!", TextType::RAW);
                 return 0;
             }
             for (auto v : blocks)
             {
-                if (blockName == ("minecraft:" + v) && !is_usrperm && !is_grperm && !is_auth)
+                if (blockName == ("minecraft:" + v) && (checkPerm(res_nick, perm) || checkPerm(res_nick, "plugins.*") || checkPerm(res_nick, "wp.*") || checkPermWorlds(res_nick, perm, dim) || checkPermWorlds(res_nick, "plugins.*", dim) || checkPermWorlds(res_nick, "wp.*", dim)) != true)
                 {
-                    ev.mPlayer->sendText("[World Protectd]: This is block not breakable  for building!", TextType::RAW);
+                    ev.mPlayer->sendText("[World Protectd]: This is block not breakable for building!", TextType::RAW);
                     return 0;
                 }
             }
@@ -2899,17 +1838,11 @@ void entry()
     });
     Event::PlayerDestroyBlockEvent::subscribe([](const Event::PlayerDestroyBlockEvent& ev) 
     {
-            _Groups    groups;
             Users      users;
             auto nodes = YAML::LoadFile("plugins/PurePerms/users.yml");
             for (const auto& p : nodes["users"])
             {
                 users.users.push_back(p.as<_User>());
-            }
-            auto nodes1 = YAML::LoadFile("plugins/PurePerms/groups.yml");
-            for (const auto& p : nodes1["groups"])
-            {
-                groups.groups.push_back(p.as<_Group>());
             }
             BlockInstance bl = ev.mBlockInstance;
             auto blockName = bl.getBlock()->getTypeName();
@@ -2950,53 +1883,21 @@ void entry()
                     }
                 }
             }
-            bool is_usrperm = false, is_grperm = false;
-            auto pl = load_user(res_nick);
-            auto gr = load_group(pl.group);
-            bool is_block = false;
-            for (auto v : lock_worlds)
+            string perm = "wp.cmd.protect.auth";
+            if ((checkPerm(res_nick, perm) || checkPerm(res_nick, "plugins.*") || checkPerm(res_nick, "wp.*") || checkPermWorlds(res_nick, perm, dim) || checkPermWorlds(res_nick, "plugins.*", dim) || checkPermWorlds(res_nick, "wp.*", dim)))
             {
-                if (dim == v)
-                {
-                    is_block = true;
-                    break;
-                }
+                return 1;
             }
-            for (auto v : pl.permissions)
+            else
             {
-                if (v == "wp.cmd.protect.auth")
-                {
-                    is_usrperm = true;
-                    break;
-                }
-            }
-            for (auto v : gr.perms)
-            {
-                if (v == "wp.cmd.protect.auth")
-                {
-                    is_grperm = true;
-                    break;
-                }
-            }
-            bool is_auth = false;
-            for (auto nick1 : auth_players)
-            {
-                if (nick1 == res_nick)
-                {
-                    is_auth = true;
-                    break;
-                }
-            }
-            if (is_block && !is_usrperm && !is_grperm && !is_auth)
-            {
-                ev.mPlayer->sendText("[World Protectd]: This is world locked for destroyed!", TextType::RAW);
+                ev.mPlayer->sendText("[World Protectd]: This is world locked for building!", TextType::RAW);
                 return 0;
             }
             for (auto v : blocks)
             {
-                if (blockName == ("minecraft:" + v) && !is_usrperm && !is_grperm && !is_auth)
+                if (blockName == ("minecraft:" + v) && (checkPerm(res_nick, perm) || checkPerm(res_nick, "plugins.*") || checkPerm(res_nick, "wp.*") || checkPermWorlds(res_nick, perm, dim) || checkPermWorlds(res_nick, "plugins.*", dim) || checkPermWorlds(res_nick, "wp.*", dim)) != true)
                 {
-                    ev.mPlayer->sendText("[World Protectd]: This is block not breakable  for destroyed!", TextType::RAW);
+                    ev.mPlayer->sendText("[World Protectd]: This is block not breakable for building!", TextType::RAW);
                     return 0;
                 }
             }
